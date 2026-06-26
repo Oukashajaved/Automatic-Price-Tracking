@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.env
+.venv
+env/
+venv/
+data/price_history.db
+*.egg-info/
+.DS_Store
+.idea/

@@ -1,0 +1,29 @@
+[tool.poetry]
+name = "automated_price_tracking"
+version = "0.3.0"
+description = "Track e-commerce prices and get Discord alerts on drops"
+authors = []
+readme = "README.md"
+packages = [{include = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+streamlit = "^1.40.2"
+requests = "^2.32.3"
+beautifulsoup4 = "^4.12.3"
+plotly = "^5.24.1"
+python-dotenv = "^1.0.1"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.4"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["src/tests"]
+
+[tool.poetry.scripts]
+check-prices = "src.check_prices:check_prices"
