@@ -22,10 +22,22 @@ def fetch_rendered_html(url: str) -> str:
             crawler = PlaywrightCrawler(
                 max_requests_per_crawl=1,
                 headless=True,
+                min_concurrency=1,
+                max_concurrency=1,
             )
             @crawler.router.default_handler
             async def request_handler(context: PlaywrightCrawlingContext):
-                await context.page.wait_for_timeout(6000)
+                # Smart dynamic poll: wait for title and basic content to load
+                for _ in range(18):
+                    try:
+                        has_h1 = await context.page.locator("h1").count() > 0
+                        if has_h1:
+                            h1_text = await context.page.locator("h1").first.inner_text()
+                            if h1_text.strip():
+                                break
+                    except Exception:
+                        pass
+                    await context.page.wait_for_timeout(250)
                 html = await context.page.content()
                 html_content.append(html)
                 
@@ -53,6 +65,7 @@ class CustomScraper:
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     ]
+    ALWAYS_PLAYWRIGHT_DOMAINS = ["walmart.com", "target.com", "aliexpress.com", "amazon.com", "bestbuy.com"]
 
     def __init__(self):
         self._session = requests.Session()
@@ -73,7 +86,17 @@ class CustomScraper:
         
         results = [None] * len(urls)
         failed_indices = []
+        standard_urls_to_indices = {}
         
+        # Pre-filter: identify which URLs must skip standard requests
+        for i, url in enumerate(urls):
+            parsed = urlparse(url)
+            netloc = parsed.netloc.lower()
+            if any(domain in netloc for domain in self.ALWAYS_PLAYWRIGHT_DOMAINS):
+                failed_indices.append(i)
+            else:
+                standard_urls_to_indices[url] = i
+
         def scrape_single_request(url):
             session = requests.Session()
             session.headers.update({
@@ -84,8 +107,8 @@ class CustomScraper:
             html = ""
             try:
                 parsed = urlparse(url)
-                session.get(f"{parsed.scheme}://{parsed.netloc}", timeout=10)
-                resp = session.get(url, timeout=20)
+                session.get(f"{parsed.scheme}://{parsed.netloc}", timeout=5)
+                resp = session.get(url, timeout=10)
                 if resp.status_code == 200 and "captcha" not in resp.text.lower() and "are you a human" not in resp.text.lower():
                     html = resp.text
             except Exception as e:
@@ -97,20 +120,21 @@ class CustomScraper:
             soup = BeautifulSoup(html, "html.parser")
             return self._extract_from_soup(soup, url)
 
-        # Run standard requests concurrently
-        with ThreadPoolExecutor(max_workers=min(len(urls) or 1, 10)) as executor:
-            futures = {executor.submit(scrape_single_request, url): i for i, url in enumerate(urls)}
-            for future in as_completed(futures):
-                i = futures[future]
-                try:
-                    data = future.result()
-                    if data and data.get("price", 0.0) > 0.0:
-                        results[i] = data
-                    else:
-                        failed_indices.append(i)
-                except Exception as e:
-                    print(f"[Scraper] Thread error for {urls[i]}: {e}")
-                    failed_indices.append(i)
+        # Run standard requests concurrently for non-Playwright domains
+        if standard_urls_to_indices:
+            with ThreadPoolExecutor(max_workers=min(len(standard_urls_to_indices), 10)) as executor:
+                futures = {executor.submit(scrape_single_request, url): idx for url, idx in standard_urls_to_indices.items()}
+                for future in as_completed(futures):
+                    idx = futures[future]
+                    try:
+                        data = future.result()
+                        if data and data.get("price", 0.0) > 0.0:
+                            results[idx] = data
+                        else:
+                            failed_indices.append(idx)
+                    except Exception as e:
+                        print(f"[Scraper] Thread error for {urls[idx]}: {e}")
+                        failed_indices.append(idx)
 
         # For failed or client-side rendered URLs, run them concurrently in ONE PlaywrightCrawler instance
         if failed_indices:
@@ -126,10 +150,22 @@ class CustomScraper:
                 crawler = PlaywrightCrawler(
                     max_requests_per_crawl=len(failed_urls),
                     headless=True,
+                    min_concurrency=len(failed_urls),
+                    max_concurrency=len(failed_urls),
                 )
                 @crawler.router.default_handler
                 async def request_handler(context: PlaywrightCrawlingContext):
-                    await context.page.wait_for_timeout(6000)
+                    # Smart dynamic poll: wait for title and basic content to load
+                    for _ in range(18):
+                        try:
+                            has_h1 = await context.page.locator("h1").count() > 0
+                            if has_h1:
+                                h1_text = await context.page.locator("h1").first.inner_text()
+                                if h1_text.strip():
+                                    break
+                        except Exception:
+                            pass
+                        await context.page.wait_for_timeout(250)
                     html = await context.page.content()
                     url_to_html[context.request.url] = html
                     
