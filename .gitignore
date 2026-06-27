@@ -1,11 +1,24 @@
+# Dependencies
 __pycache__/
 *.py[cod]
-.pytest_cache/
-.env
-.venv
-env/
-venv/
-data/price_history.db
 *.egg-info/
-.DS_Store
+.pytest_cache/
+.venv/
+venv/
+env/
+
+# Runtime data
+data/
+storage/
+
+# Secrets
+.env
+
+# IDE / OS
 .idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Stale build artifacts
+poetry.lock

@@ -7,9 +7,10 @@ import src.db as db
 
 @pytest.fixture(autouse=True)
 def clean_db():
+    conn = db._get_conn()
     for t in ["price_history", "products", "settings"]:
-        db.conn.execute(f"DELETE FROM {t}")
-    db.conn.commit()
+        conn.execute(f"DELETE FROM {t}")
+    conn.commit()
 
 
 def test_add_and_get_product():

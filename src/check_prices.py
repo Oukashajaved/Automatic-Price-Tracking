@@ -1,3 +1,4 @@
+import json
 from src import db
 from src.scraper import CustomScraper
 from src.notifications import send_price_alert
@@ -19,7 +20,13 @@ def check_prices():
             db.add_price_entry(p["url"], new_price, data.get("name", p["name"]))
             db.update_product(p["url"], new_price, data.get("name", p["name"]),
                               data.get("currency", "USD"), data.get("main_image_url", ""),
-                              p.get("comparison_group"))
+                              p.get("comparison_group"),
+                              seller=data.get("seller", ""), seller_rating=str(data.get("rating", 0.0)),
+                              review_count=int(data.get("review_count", 0)), condition=data.get("condition", "New"),
+                              shipping=data.get("shipping", ""), site=p.get("site", ""),
+                              images=json.dumps(data.get("images", [])), brand=data.get("brand", ""),
+                              rating=float(data.get("rating", 0.0)), description=data.get("description", ""),
+                              specs=json.dumps(data.get("specs", {})))
             updated += 1
             print(f"Checked: {data.get('name', p['name'])}")
         except Exception as e:

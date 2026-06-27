@@ -1,7 +1,7 @@
 [tool.poetry]
-name = "automated_price_tracking"
-version = "0.3.0"
-description = "Track e-commerce prices and get Discord alerts on drops"
+name = "universal-price-tracker"
+version = "1.0.0"
+description = "Track e-commerce prices across any site and get Discord alerts on drops"
 authors = []
 readme = "README.md"
 packages = [{include = "src"}]
@@ -11,7 +11,11 @@ python = "^3.10"
 streamlit = "^1.40.2"
 requests = "^2.32.3"
 beautifulsoup4 = "^4.12.3"
-
+pandas = "^2.0.0"
+crawlee = {extras = ["playwright"], version = "^0.5.0"}
+playwright = "^1.40.0"
+playwright-stealth = "^1.0.6"
+nest-asyncio = "^1.6.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.4"
@@ -21,7 +25,7 @@ requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = ["."]
 testpaths = ["src/tests"]
 
 [tool.poetry.scripts]

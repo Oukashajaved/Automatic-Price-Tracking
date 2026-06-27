@@ -1,5 +1,15 @@
-import os  # ponytail: os.getenv is built-in, no dotenv dep needed
+import os
+from pathlib import Path
 from src.db import get_setting
+
+# ponytail: manual .env loader, no dotenv dep
+_env_path = Path(__file__).resolve().parent.parent / ".env"
+if _env_path.exists():
+    for line in _env_path.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, _, v = line.partition("=")
+            os.environ.setdefault(k.strip(), v.strip())
 
 
 def get_discord_webhook():
@@ -13,6 +23,3 @@ def get_drop_threshold():
 
 def get_groq_api_key():
     return get_setting("groq_api_key") or os.getenv("GROQ_API_KEY", "")
-
-def get_serper_api_key():
-    return get_setting("serper_api_key") or os.getenv("SERPER_API_KEY", "")
