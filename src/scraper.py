@@ -63,62 +63,141 @@ class CustomScraper:
         self._soup_cache = {}
 
     def scrape_url(self, url):
-        self._soup_cache.clear()
-        extracted = None
-        self._force_playwright = False
+        res = self.scrape_urls_batch([url])
+        if res and res[0].get("name"):
+            return {"extract": res[0]}
+        raise Exception(f"Could not scrape: {url}")
+
+    def scrape_urls_batch(self, urls: list[str]) -> list[dict]:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         
-        # 1. First attempt: Standard requests
+        results = [None] * len(urls)
+        failed_indices = []
+        
+        def scrape_single_request(url):
+            session = requests.Session()
+            session.headers.update({
+                "User-Agent": random.choice(self.__USER_AGENTS),
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+            })
+            html = ""
+            try:
+                parsed = urlparse(url)
+                session.get(f"{parsed.scheme}://{parsed.netloc}", timeout=10)
+                resp = session.get(url, timeout=20)
+                if resp.status_code == 200 and "captcha" not in resp.text.lower() and "are you a human" not in resp.text.lower():
+                    html = resp.text
+            except Exception as e:
+                print(f"[Scraper] Quick fetch failed for {url}: {e}")
+                
+            if not html:
+                return None
+                
+            soup = BeautifulSoup(html, "html.parser")
+            return self._extract_from_soup(soup, url)
+
+        # Run standard requests concurrently
+        with ThreadPoolExecutor(max_workers=min(len(urls) or 1, 10)) as executor:
+            futures = {executor.submit(scrape_single_request, url): i for i, url in enumerate(urls)}
+            for future in as_completed(futures):
+                i = futures[future]
+                try:
+                    data = future.result()
+                    if data and data.get("price", 0.0) > 0.0:
+                        results[i] = data
+                    else:
+                        failed_indices.append(i)
+                except Exception as e:
+                    print(f"[Scraper] Thread error for {urls[i]}: {e}")
+                    failed_indices.append(i)
+
+        # For failed or client-side rendered URLs, run them concurrently in ONE PlaywrightCrawler instance
+        if failed_indices:
+            failed_urls = [urls[i] for i in failed_indices]
+            print(f"[Scraper] Playwright rendering needed for {len(failed_urls)} URLs: {failed_urls}")
+            
+            url_to_html = {}
+            import asyncio
+            import nest_asyncio
+            from crawlee.crawlers import PlaywrightCrawler, PlaywrightCrawlingContext
+
+            async def run_crawler_batch():
+                crawler = PlaywrightCrawler(
+                    max_requests_per_crawl=len(failed_urls),
+                    headless=True,
+                )
+                @crawler.router.default_handler
+                async def request_handler(context: PlaywrightCrawlingContext):
+                    await context.page.wait_for_timeout(6000)
+                    html = await context.page.content()
+                    url_to_html[context.request.url] = html
+                    
+                await crawler.run(failed_urls)
+
+            try:
+                try:
+                    loop = asyncio.get_event_loop()
+                except RuntimeError:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    
+                if loop.is_running():
+                    nest_asyncio.apply()
+                    
+                loop.run_until_complete(run_crawler_batch())
+            except Exception as e:
+                print(f"[Scraper] Playwright batch crawl failed: {e}")
+
+            # Parse the returned HTMLs
+            for i in failed_indices:
+                url = urls[i]
+                html = url_to_html.get(url)
+                if html:
+                    soup = BeautifulSoup(html, "html.parser")
+                    data = self._extract_from_soup(soup, url)
+                    if data and data.get("name"):
+                        results[i] = data
+
+        # Normalize results and return list
+        final_list = []
+        for i, url in enumerate(urls):
+            extracted = results[i]
+            if not extracted:
+                extracted = {"name": "", "price": 0.0, "currency": "USD"}
+            
+            if not extracted.get("images"):
+                extracted["images"] = [extracted["main_image_url"]] if extracted.get("main_image_url") else []
+            if not extracted.get("brand"):
+                extracted["brand"] = ""
+            if not extracted.get("seller"):
+                extracted["seller"] = ""
+            if not extracted.get("rating"):
+                extracted["rating"] = 0.0
+            if not extracted.get("review_count"):
+                extracted["review_count"] = 0
+            if not extracted.get("condition"):
+                extracted["condition"] = "New"
+            if not extracted.get("shipping"):
+                extracted["shipping"] = "Calculated at checkout"
+            if not extracted.get("description"):
+                extracted["description"] = ""
+            if not extracted.get("specs"):
+                extracted["specs"] = {}
+            final_list.append(extracted)
+
+        return final_list
+
+    def _extract_from_soup(self, soup, url):
+        self._soup_cache[url] = soup
         for method_name in ["_from_jsonld", "_from_microdata", "_from_meta", "_from_generic"]:
             try:
                 data = getattr(self, method_name)(url)
                 if data and data.get("name"):
-                    if data.get("price", 0.0) > 0.0:
-                        extracted = data
-                        break
-                    else:
-                        extracted = data
+                    return data
             except Exception as e:
-                print(f"[Scraper] Method {method_name} failed: {e}")
-                
-        # 2. Dynamic fallback: if price is 0.0 or not found, use Playwright
-        if not extracted or extracted.get("price", 0.0) == 0.0:
-            print(f"[Scraper] Price was 0.0 or not found. Retrying {url} through Playwright...")
-            self._force_playwright = True
-            self._soup_cache.clear()
-            for method_name in ["_from_jsonld", "_from_microdata", "_from_meta", "_from_generic"]:
-                try:
-                    data = getattr(self, method_name)(url)
-                    if data and data.get("name"):
-                        extracted = data
-                        if data.get("price", 0.0) > 0.0:
-                            break
-                except Exception as e:
-                    print(f"[Scraper] Playwright method {method_name} failed: {e}")
-                    
-        if not extracted:
-            raise Exception(f"Could not scrape: {url}")
-            
-        # Clean up and normalize fields
-        if not extracted.get("images"):
-            extracted["images"] = [extracted["main_image_url"]] if extracted.get("main_image_url") else []
-        if not extracted.get("brand"):
-            extracted["brand"] = ""
-        if not extracted.get("seller"):
-            extracted["seller"] = ""
-        if not extracted.get("rating"):
-            extracted["rating"] = 0.0
-        if not extracted.get("review_count"):
-            extracted["review_count"] = 0
-        if not extracted.get("condition"):
-            extracted["condition"] = "New"
-        if not extracted.get("shipping"):
-            extracted["shipping"] = "Calculated at checkout"
-        if not extracted.get("description"):
-            extracted["description"] = ""
-        if not extracted.get("specs"):
-            extracted["specs"] = {}
-            
-        return {"extract": extracted}
+                pass
+        return None
 
     def _from_jsonld(self, url):
         soup = self._soup(url)

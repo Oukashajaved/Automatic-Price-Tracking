@@ -101,26 +101,26 @@ def search_all_generic(query: str, domains: dict[str, str], max_pages: int = 1, 
             site_to_urls[name] = urls
             
     # 2. Gather all tasks
-    all_tasks = []
+    urls_to_scrape = []
+    task_map = []  # List of (site_name, url)
     for site_name, urls in site_to_urls.items():
-        for i, url in enumerate(urls[:10]):
-            all_tasks.append((site_name, url, i))
+        for url in urls[:10]:
+            urls_to_scrape.append(url)
+            task_map.append((site_name, url))
             
-    if not all_tasks:
+    if not urls_to_scrape:
         return {}
         
     if progress_callback:
-        progress_callback(f"Found {len(all_tasks)} products. Scraping details concurrently...")
+        progress_callback(f"Found {len(urls_to_scrape)} products. Scraping details in batch...")
 
-    results = {name: [] for name in domains.keys()}
+    scraper = CustomScraper()
+    batch_results = scraper.scrape_urls_batch(urls_to_scrape)
     
-    def scrape_single_task(task):
-        site_name, url, idx = task
-        # Use a fresh scraper instance in each thread to ensure thread-safety
-        scraper = CustomScraper()
-        try:
-            data = scraper.scrape_url(url)["extract"]
-            return site_name, {
+    results = {name: [] for name in domains.keys()}
+    for (site_name, url), data in zip(task_map, batch_results):
+        if data and data.get("name"):
+            results[site_name].append({
                 "url": url,
                 "name": data["name"],
                 "price": data["price"],
@@ -136,20 +136,9 @@ def search_all_generic(query: str, domains: dict[str, str], max_pages: int = 1, 
                 "site": site_name,
                 "description": data.get("description", ""),
                 "specs": json.dumps(data.get("specs", {}))
-            }
-        except Exception as e:
-            print(f"[Search] Error scraping {url}: {e}")
-            return site_name, None
-
-    # Limit max_workers to 4 to balance concurrent speed and system resources
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        futures = {executor.submit(scrape_single_task, task): task for task in all_tasks}
-        for future in as_completed(futures):
-            site_name, res_dict = future.result()
-            if res_dict:
-                results[site_name].append(res_dict)
-                if progress_callback:
-                    progress_callback(f"Scraped: {res_dict['name'][:40]}... ({site_name})")
+            })
+            if progress_callback:
+                progress_callback(f"Scraped: {data['name'][:40]}... ({site_name})")
 
     # Remove empty results
     return {k: v for k, v in results.items() if v}
