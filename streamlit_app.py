@@ -1,164 +1,191 @@
 from datetime import datetime, timedelta
 from urllib.parse import urlparse
 
-import plotly.express as px
+import pandas as pd
 import streamlit as st
 import requests
 
 from src import db
-from src.config import get_discord_webhook, get_drop_threshold
-from src.notifications import send_price_alert
+from src.ai_search_service import AISearchService
+from src.config import get_discord_webhook, get_drop_threshold, get_groq_api_key
 from src.scraper import CustomScraper
 
-st.set_page_config(page_title="Price Tracker", page_icon="🔮", layout="wide")
+st.set_page_config(page_title="Price Tracker", layout="wide")
 scraper = CustomScraper()
 
-for k, v in {"last_check": None, "check_results": [], "page": "📊 Dashboard"}.items():
-    if k not in st.session_state:
-        st.session_state[k] = v
+st.session_state.setdefault("last_check", None)
 
-st.markdown("""
-<style>
-    section[data-testid="stSidebar"] { background: #413735 !important; }
-    section[data-testid="stSidebar"] hr { border-color: rgba(255,255,255,0.1) !important; }
-    section[data-testid="stSidebar"] div[role="radiogroup"] label {
-        display: flex !important; align-items: center !important; gap: 8px !important;
-        padding: 6px 10px !important; border-radius: 6px !important;
-        font-size: 0.875rem !important; cursor: pointer !important; color: #f5f0eb !important;
-    }
-    section[data-testid="stSidebar"] div[role="radiogroup"] label:hover { background: rgba(255,255,255,0.08) !important; }
-    section[data-testid="stSidebar"] div[role="radiogroup"] label[data-checked="true"] { background: #f43e01 !important; color: white !important; }
-    section[data-testid="stSidebar"] .stTextInput input {
-        background: rgba(255,255,255,0.08) !important; border: 1px solid rgba(255,255,255,0.15) !important;
-        color: #2D2926 !important; border-radius: 6px !important;
-    }
-    section[data-testid="stSidebar"] .stTextInput input::placeholder { color: rgba(45,41,38,0.4) !important; }
-    section[data-testid="stSidebar"] .stButton button[kind="primary"] { background: #f43e01 !important; color: white !important; border: none !important; border-radius: 6px !important; }
-    section[data-testid="stSidebar"] p, section[data-testid="stSidebar"] .stMarkdown { color: #f5f0eb !important; }
-    .stButton button, .stLinkButton a { color: white !important; border: none !important; border-radius: 6px !important; }
-    .stButton button[kind="primary"], .stLinkButton a { background: #f43e01 !important; }
-    .stButton button[kind="secondary"] { background: #6B5B4F !important; color: white !important; }
-    header[data-testid="stHeader"] button, header[data-testid="stHeader"] svg { color: #2D2926 !important; fill: #2D2926 !important; }
-</style>
-""", unsafe_allow_html=True)
+st.markdown("""<style>
+    section[data-testid="stSidebar"] { background: #F0ECEA !important; }
+    section[data-testid="stSidebar"] hr { border-color: rgba(0,0,0,0.06) !important; }
+    section[data-testid="stSidebar"] .stTextInput input { background: white !important; border: 1px solid #D5CFC8 !important; border-radius: 6px !important; outline: none !important; box-shadow: none !important; }
+    section[data-testid="stSidebar"] .stTextInput input:focus { outline: none !important; box-shadow: none !important; border-color: #A78BFA !important; }
+    section[data-testid="stSidebar"] .stTextInput input::placeholder { color: rgba(45,41,38,0.3) !important; }
+    section[data-testid="stSidebar"] p, section[data-testid="stSidebar"] .stMarkdown { color: #4A4458 !important; }
+    section[data-testid="stSidebar"] .stButton button[kind="secondary"] { background: transparent !important; color: #A78BFA !important; border: 1px solid #A78BFA !important; border-radius: 6px !important; }
+    section[data-testid="stSidebar"] .stButton button[kind="secondary"]:hover { background: rgba(167,139,250,0.08) !important; }
+    section[data-testid="stSidebar"] .stButton button[kind="primary"] { background: #A78BFA !important; color: white !important; border-radius: 6px !important; }
+    section[data-testid="stSidebar"] .stButton button[kind="primary"]:hover { background: #9578E8 !important; }
+    .stButton button[kind="secondary"] { background: transparent !important; color: #EF4444 !important; border: 1px solid #EF4444 !important; border-radius: 6px !important; }
+    .stButton button[kind="secondary"]:hover { background: #FEF2F2 !important; }
+    .stButton button[kind="primary"] { background: #A78BFA !important; border-radius: 6px !important; }
+    .stButton button[kind="primary"]:hover { background: #9578E8 !important; }
+    .stLinkButton a { background: transparent !important; color: #A78BFA !important; border: 1px solid #A78BFA !important; border-radius: 6px !important; }
+    .stLinkButton a:hover { background: rgba(167,139,250,0.08) !important; }
+    div[data-testid="stMetric"] { background: #F5F3FF; padding: 8px 12px; border-radius: 8px; }
+    div[data-testid="stMetric"] label { color: #6B5B4F !important; }
+    div[data-testid="stMetric"] [data-testid="stMetricValue"] { color: #2D2926 !important; }
+</style>""", unsafe_allow_html=True)
 
 
 def _run_check():
-    products = db.get_all_products()
-    if not products:
-        st.session_state.check_results = []
-        st.session_state.last_check = datetime.now()
-        return
-
-    threshold = get_drop_threshold()
-    results = []
-    bar = st.progress(0, text="Checking prices...")
-    for i, p in enumerate(products):
-        try:
-            data = scraper.scrape_url(p["url"])["extract"]
-            new_price = data["price"]
-            history = db.get_price_history(p["url"])
-            alert_data = {}
-            if history:
-                first_price = history[0]["price"]
-                if first_price > new_price:
-                    drop = (first_price - new_price) / first_price
-                    if drop >= threshold:
-                        send_price_alert(p["name"], first_price, new_price, p["url"])
-                        alert_data = {"alert": True, "old_price": first_price, "new_price": new_price, "drop": drop * 100}
-            name = data.get("name", p["name"])
-            db.add_price_entry(p["url"], new_price, name)
-            db.update_product(p["url"], new_price, name, data.get("currency", "USD"), data.get("main_image_url", ""))
-            results.append({"name": name, "price": new_price} | alert_data)
-        except Exception as e:
-            results.append({"name": p.get("name", p["url"]), "error": str(e)})
-        bar.progress((i + 1) / len(products), text=f"Checked {i + 1}/{len(products)}")
-    bar.empty()
-    st.session_state.check_results = results
+    from src.check_prices import check_prices  # ponytail: lazy import avoids circular dep at module level
+    results = check_prices()
     st.session_state.last_check = datetime.now()
 
 
 def _show_dashboard():
-    if st.session_state.check_results:
-        alerts = [r for r in st.session_state.check_results if r.get("alert")]
-        errors = [r for r in st.session_state.check_results if r.get("error")]
-        ok = [r for r in st.session_state.check_results if not r.get("alert") and not r.get("error")]
-        c1, c2, c3 = st.columns(3)
-        c1.metric("✅ OK", len(ok))
-        c2.metric("🔔 Drops", len(alerts))
-        c3.metric("❌ Errors", len(errors))
-        for r in st.session_state.check_results:
-            if r.get("alert"):
-                st.warning(f"🚨 {r['name']} dropped {r['drop']:.1f}% — ${r['old_price']:.2f} → ${r['new_price']:.2f}")
-            elif r.get("error"):
-                st.error(f"❌ {r['name']} — {r['error']}")
-            else:
-                st.info(f"✅ {r['name']} — ${r['price']:.2f}")
-        st.divider()
-
-    st.subheader("📦 Tracked Products")
+    c1, c2 = st.columns([6, 1])
+    c1.subheader("Tracked Products")
+    if c2.button("Check Now", type="primary", use_container_width=True, key="cd"):
+        _run_check()
     products = db.get_all_products()
     if not products:
         st.info("No products tracked yet. Add one from the sidebar!")
         return
 
-    for p in products:
-        history = db.get_price_history(p["url"])
-        latest_price = history[-1]["price"] if history else p["price"]
-        currency = p.get("currency", "USD")
-        prefix = "PKR " if currency == "PKR" else "$" if currency == "USD" else f"{currency} "
+    df = pd.DataFrame(products)
 
-        drop_pct = None
-        if history and latest_price < history[0]["price"]:
-            drop_pct = (history[0]["price"] - latest_price) / history[0]["price"] * 100
+    if "comparison_group" in df.columns:
+        grouped_df = df[df["comparison_group"].notna() & (df["comparison_group"] != "")]
+        ungrouped_df = df[df["comparison_group"].isna() | (df["comparison_group"] == "")]
+    else:
+        grouped_df, ungrouped_df = pd.DataFrame(), df
 
-        with st.container():
-            cols = st.columns([1, 3, 2])
-            if p.get("main_image_url"):
-                cols[0].image(p["main_image_url"], width=64)
-            else:
-                cols[0].empty()
-            with cols[1]:
-                st.markdown(f"**{p['name'][:70]}**")
-                badge = f"🔻 {drop_pct:.1f}%" if drop_pct else "✅ Stable"
-                st.caption(f"{badge} · {currency}")
-            with cols[2]:
-                st.markdown(f"**{prefix}{latest_price:.2f}**")
-                if history and len(history) >= 2:
-                    diff = latest_price - history[-2]["price"]
-                    if diff < 0:
-                        st.markdown(f"📉 ${abs(diff):.2f}")
-                    elif diff > 0:
-                        st.markdown(f"📈 ${diff:.2f}")
+    if not grouped_df.empty:
+        st.markdown("### Price Comparison Groups")
+        for group_name, group_products in grouped_df.groupby("comparison_group"):
+            with st.expander(f"Group: {group_name}", expanded=True):
+                ai_service = AISearchService()
+                products_list = group_products.sort_values("price").to_dict("records")
+                g_tab_products, g_tab_charts, g_tab_ai = st.tabs(["Products", "Price Charts", "Chat"])
 
-            with st.expander("📊 Price History"):
-                if history:
-                    fig = px.line(history, x="timestamp", y="price")
-                    fig.update_layout(height=180, margin=dict(l=0, r=0, t=4, b=0),
-                                      paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-                    fig.update_traces(line=dict(color="#f43e01", width=2), fill="tozeroy", fillcolor="rgba(244,62,1,0.08)")
-                    fig.update_yaxes(tickprefix=prefix)
-                    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False}, key=f"chart_{p['url']}")
-                else:
-                    st.caption("No history yet")
-            a, b = st.columns([1, 1])
-            a.link_button("🔗 Visit", p["url"], use_container_width=True)
-            if b.button("🗑️ Remove", key=f"rm_{p['url']}", use_container_width=True):
-                db.delete_product(p["url"])
-                st.rerun()
-        st.divider()
+                with g_tab_products:
+                    recommendation = ai_service.generate_recommendation(group_name, products_list)
+                    if recommendation:
+                        st.info(f"**AI Tip:** {recommendation}")
+
+                    cheapest_url = min(products_list, key=lambda x: x["price"])["url"]
+
+                    for p_row in products_list:
+                        domain = urlparse(p_row["url"]).netloc.replace("www.", "")
+                        is_cheapest = p_row["url"] == cheapest_url
+                        prefix = "Cheapest — " if is_cheapest else ""
+
+                        h = db.get_price_history(p_row["url"])
+                        latest_price = h[-1]["price"] if h else p_row["price"]
+                        curr = p_row.get("currency", "USD")
+                        fmt = "PKR " if curr == "PKR" else "$" if curr == "USD" else f"{curr} "
+
+                        drop_pct = None
+                        if h and latest_price < h[0]["price"]:
+                            drop_pct = (h[0]["price"] - latest_price) / h[0]["price"] * 100
+
+                        cols = st.columns([1, 3, 2])
+                        if p_row.get("main_image_url"):
+                            cols[0].image(p_row["main_image_url"], width=80)
+                        cols[1].markdown(f"**{prefix}{p_row['name']}**")
+                        badge = f"Down {drop_pct:.1f}%" if drop_pct else "Stable"
+                        cols[1].caption(f"**{domain}** · {badge}")
+                        cols[2].markdown(f"**{fmt}{latest_price:.2f}**")
+                        cols[2].link_button("Visit", p_row["url"], use_container_width=True)
+                        if cols[2].button("Remove", key=f"rm_g_{p_row['url']}", use_container_width=True):
+                            db.delete_product(p_row["url"])
+                            st.rerun()
+                        st.divider()
+
+                with g_tab_charts:
+                    histories = []
+                    for _, row in group_products.iterrows():
+                        domain = urlparse(row["url"]).netloc.replace("www.", "")
+                        for entry in db.get_price_history(row["url"]):
+                            histories.append({
+                                "ts": entry["timestamp"],
+                                "price": entry["price"],
+                                "store": f"{row['name'][:25]} ({domain})"
+                            })
+
+                    if histories:
+                        dfh = pd.DataFrame(histories)
+                        dfh["ts"] = pd.to_datetime(dfh["ts"])
+                        dfh = dfh.pivot_table(index="ts", columns="store", values="price", aggfunc="first").ffill()
+                        st.area_chart(dfh, height=350, use_container_width=True)
+                    else:
+                        st.caption("No price history yet for this group.")
+
+                with g_tab_ai:
+                    if "chat_history" not in st.session_state:
+                        st.session_state.chat_history = {}
+                    if group_name not in st.session_state.chat_history:
+                        st.session_state.chat_history[group_name] = []
+
+                    chat_container = st.container(height=350)
+                    with chat_container:
+                        for msg in st.session_state.chat_history[group_name]:
+                            with st.chat_message(msg["role"]):
+                                st.write(msg["content"])
+
+                    if user_msg := st.chat_input("Ask about price trends or store comparisons..."):
+                        st.session_state.chat_history[group_name].append({"role": "user", "content": user_msg})
+                        with chat_container:
+                            with st.chat_message("user"):
+                                st.write(user_msg)
+
+                        histories_dict = {row["url"]: db.get_price_history(row["url"]) for _, row in group_products.iterrows()}
+
+                        with chat_container:
+                            with st.chat_message("assistant"):
+                                with st.spinner(""):
+                                    response = ai_service.generate_chat_response(
+                                        group_name=group_name, products=products_list,
+                                        histories=histories_dict, user_message=user_msg,
+                                        chat_history=st.session_state.chat_history[group_name][:-1]
+                                    )
+                                st.write(response)
+                        st.session_state.chat_history[group_name].append({"role": "assistant", "content": response})
+
+    if not ungrouped_df.empty:
+        st.markdown("### Individual Products")
+        for _, p in ungrouped_df.iterrows():
+            history = db.get_price_history(p["url"])
+            latest_price = history[-1]["price"] if history else p["price"]
+            curr = p.get("currency", "USD")
+            fmt = "PKR " if curr == "PKR" else "$" if curr == "USD" else f"{curr} "
+
+            ca, cb = st.columns([4, 1])
+            with ca:
+                cols = st.columns([1, 3, 1])
+                if p.get("main_image_url"):
+                    cols[0].image(p["main_image_url"], width=50)
+                cols[1].markdown(f"**{p['name'][:50]}**")
+                cols[2].markdown(f"**{fmt}{latest_price:.2f}**")
+            with cb:
+                st.link_button("Visit", p["url"], use_container_width=True)
+                if st.button("Remove", key=f"rm_{p['url']}", use_container_width=True):
+                    db.delete_product(p["url"])
+                    st.rerun()
 
 
 def _show_settings():
-    st.subheader("⚙️ Settings")
+    st.subheader("Settings")
 
-    st.markdown("**⏱ Price Checker**")
+    st.markdown("**Price Checker**")
     db_interval = db.get_setting("check_interval", "Manual")
     vals = ["Manual", "1 hour", "2 hours", "4 hours", "6 hours", "12 hours", "24 hours"]
     idx = vals.index(db_interval) if db_interval in vals else 3
     interval = st.selectbox("Auto-check every", vals, index=idx, label_visibility="collapsed")
     db.set_setting("check_interval", interval)
-    if st.button("🔍 Check Now", type="primary", use_container_width=True):
+    if st.button("Check Now", type="primary", width="stretch"):
         _run_check()
     if st.session_state.last_check:
         st.caption(f"Last: {st.session_state.last_check.strftime('%Y-%m-%d %H:%M')}")
@@ -169,7 +196,21 @@ def _show_settings():
 
     st.divider()
 
-    st.markdown("**🔔 Alerts**")
+    st.markdown("**AI Config**")
+    groq_key = st.text_input("Groq API Key", value=get_groq_api_key() or "",
+                             placeholder="gsk_...", type="password")
+    if groq_key != get_groq_api_key():
+        db.set_setting("groq_api_key", groq_key)
+        if groq_key:
+            st.success("Groq API Key saved!")
+            st.rerun()
+        else:
+            st.info("Groq API Key cleared")
+            st.rerun()
+
+    st.divider()
+
+    st.markdown("**Alerts**")
     threshold = st.slider("Drop threshold (%)", 1, 50, int(get_drop_threshold() * 100), 1)
     db.set_setting("drop_threshold", threshold / 100)
     webhook = st.text_input("Discord Webhook URL", value=get_discord_webhook() or "",
@@ -177,143 +218,100 @@ def _show_settings():
     if webhook != get_discord_webhook():
         db.set_setting("discord_webhook_url", webhook)
         if webhook:
-            st.success("✅ Webhook saved!")
+            st.success("Webhook saved!")
         else:
-            st.info("ℹ️ Webhook cleared — alerts disabled")
+            st.info("Webhook cleared — alerts disabled")
     if not webhook:
-        st.caption("⚠️ No webhook — Discord alerts disabled")
+        st.caption("No webhook — Discord alerts disabled")
     else:
-        st.caption("✅ Discord alerts active")
+        st.caption("Discord alerts active")
 
     st.divider()
 
-    st.markdown("**ℹ️ About**")
+    st.markdown("**Test**")
+    if get_discord_webhook():
+        if st.button("Send Test Discord Alert", type="primary", use_container_width=True):
+            try:
+                r = requests.post(get_discord_webhook(), json={
+                    "embeds": [{"title": "Test", "description": "Price Tracker alert working!", "color": 3066993}]
+                }, timeout=10)
+                st.success("Test sent!") if r.ok else st.error(f"HTTP {r.status_code}")
+            except Exception as e:
+                st.error(str(e))
+
+    st.markdown("**About**")
     products = db.get_all_products()
     st.markdown(f"- Tracked products: {len(products)}")
     st.markdown(f"- With price history: {sum(1 for p in products if db.get_price_history(p['url']))}")
-    if st.button("🗑️ Reset All Data", type="secondary", use_container_width=True):
+    if st.button("Reset All Data", type="secondary", width="stretch"):
         db.reset_all()
-        st.session_state.check_results = []
         st.session_state.last_check = None
         st.rerun()
 
 
-def _show_test():
-    st.subheader("🧪 Test Mode")
-    webhook = get_discord_webhook()
+st.markdown("<h1 style='text-align:center;color:#2D2926;font-size:1.5rem'>🏷️ Price Tracker</h1>", unsafe_allow_html=True)
 
-    st.markdown("**Send Test Notification**")
-    if not webhook:
-        st.warning("No Discord webhook configured. Go to Settings > Alerts to add one.")
-    else:
-        if st.button("📨 Send Test Discord Alert", type="primary", use_container_width=True):
-            try:
-                r = requests.post(webhook, json={
-                    "embeds": [{
-                        "title": "🧪 Test Notification",
-                        "description": "**Price Tracker Test**\n\nIf you see this, Discord alerts are working!\nYour webhook is configured correctly.",
-                        "color": 15258703,
-                        "footer": {"text": "Price Tracker · Test Mode"}
-                    }]
-                }, timeout=10)
-                if r.ok:
-                    st.success("✅ Test notification sent! Check your Discord channel.")
-                else:
-                    st.error(f"❌ Discord returned {r.status_code}: {r.text}")
-            except Exception as e:
-                st.error(f"❌ Failed: {e}")
+with st.sidebar:
+    st.markdown("**Search & Add**")
+    search_q = st.text_input("Search", placeholder="e.g. iPhone 15", label_visibility="collapsed", key="sq")
+    group_search = st.text_input("Group name", placeholder="e.g. phones", label_visibility="collapsed", key="gs")
+    if st.button("Search & Add", type="secondary", use_container_width=True, key="sb"):
+        if search_q:
+            g = group_search or search_q
+            with st.spinner(""):
+                try:
+                    items = AISearchService().search_google_products(search_q)
+                    if not items:
+                        st.error("No products found.")
+                    else:
+                        n = 0
+                        for it in items:
+                            if not db.get_product(it["url"]):
+                                db.add_product(it["url"], it["name"], it["price"],
+                                    it.get("currency", "USD"), it.get("main_image_url", ""),
+                                    datetime.now().strftime('%Y-%m-%d %H:%M:%S'), g)
+                                db.add_price_entry(it["url"], it["price"], it["name"])
+                                n += 1
+                        st.success(f"Added {n} product(s) to '{g}'") if n else st.warning("Already tracked.")
+                        if n:
+                            st.rerun()
+                except Exception as e:
+                    st.error(str(e))
 
     st.divider()
-    st.markdown("**📋 Discord Setup Guide**")
-    st.markdown("""
-Follow these steps to get Discord alerts:
 
-**Step 1 — Open Discord**
-- Go to your Discord server (or create one)
-
-**Step 2 — Create Webhook**
-- Right-click the **channel** where you want alerts
-- Click **Edit Channel** → **Integrations** → **Webhooks**
-- Click **Create Webhook**
-
-**Step 3 — Configure**
-- Give it a name (e.g. "Price Tracker")
-- (Optional) Set a profile picture
-- Click **Copy Webhook URL**
-
-**Step 4 — Add to Price Tracker**
-- Go to **Settings** → **Alerts**
-- Paste the copied URL into the **Discord Webhook URL** field
-- It saves automatically
-
-**Step 5 — Test**
-- Come back to this **Test** page
-- Click **Send Test Discord Alert**
-- Check your Discord channel for the test message
-
-That's it! You'll now get notified when tracked products drop in price.
-""")
-
-
-st.markdown("""
-<div style="background:white;border:1px solid #E5DDD5;border-radius:10px;padding:1.2rem 1rem;margin:-0.3rem 0 1.2rem;text-align:center;box-shadow:0 1px 3px rgba(0,0,0,0.06);">
-    <h1 style="margin:0;font-size:1.4rem;font-weight:600;color:#2D2926;">🔮 Price Tracker</h1>
-    <p style="margin:0.2rem 0 0;font-size:0.8rem;color:#6B5B4F;">Track prices across e-commerce sites · Get alerts on drops</p>
-</div>
-""", unsafe_allow_html=True)
-
-PAGES = ["📊 Dashboard", "⚙️ Settings", "🧪 Test"]
-with st.sidebar:
-    page = st.radio("", PAGES, label_visibility="collapsed",
-                     index=PAGES.index(st.session_state.page) if st.session_state.page in PAGES else 0)
-    if page != st.session_state.page:
-        st.session_state.page = page
-        st.rerun()
-
-    if page == "📊 Dashboard":
-        st.divider()
-        st.markdown("**➕ Add Product**")
-        new_url = st.text_input("URL", placeholder="https://...", label_visibility="collapsed")
-        if st.button("➕ Add Product", use_container_width=True) and new_url:
-            parsed = urlparse(new_url)
-            if not all([parsed.scheme, parsed.netloc]):
-                st.error("Invalid URL")
-            elif db.get_product(new_url):
+    st.markdown("**Add URL**")
+    url_in = st.text_input("URL", placeholder="https://...", label_visibility="collapsed", key="au")
+    group_url = st.text_input("Group name", placeholder="e.g. phones", label_visibility="collapsed", key="gu")
+    if st.button("Add URL", type="secondary", use_container_width=True, key="ab"):
+        if url_in and group_url:
+            if db.get_product(url_in):
                 st.error("Already tracked!")
             else:
-                with st.spinner("Scraping..."):
+                with st.spinner(""):
                     try:
-                        data = scraper.scrape_url(new_url)["extract"]
-                        db.add_product(new_url, data["name"], data["price"],
-                                       data.get("currency", "USD"), data.get("main_image_url", ""), "")
-                        db.add_price_entry(new_url, data["price"], data["name"])
+                        data = scraper.scrape_url(url_in)["extract"]
+                        db.add_product(url_in, data["name"], data["price"],
+                            data.get("currency", "USD"), data.get("main_image_url", ""),
+                            datetime.now().strftime('%Y-%m-%d %H:%M:%S'), group_url)
+                        db.add_price_entry(url_in, data["price"], data["name"])
                         st.success(f"Added {data['name'][:30]}...")
                         st.rerun()
                     except Exception as e:
-                        st.error(f"Failed: {e}")
+                        st.error(str(e))
+        elif not group_url:
+            st.error("Enter a group name.")
 
-        st.divider()
-        st.markdown("**⏱ Quick Check**")
-        if st.button("🔍 Check Now", type="primary", use_container_width=True):
-            _run_check()
-        if st.session_state.last_check:
-            st.caption(f"Last: {st.session_state.last_check.strftime('%H:%M, %b %d')}")
-            db_interval = db.get_setting("check_interval", "Manual")
-            if db_interval != "Manual":
-                h = int(db_interval.split()[0])
-                due = st.session_state.last_check + timedelta(hours=h)
-                st.caption(f"Next: ~{due.strftime('%H:%M, %b %d')}")
-
-# Auto-check
 db_interval = db.get_setting("check_interval", "Manual")
 if db_interval != "Manual" and st.session_state.last_check:
     h = int(db_interval.split()[0])
     if datetime.now() - st.session_state.last_check >= timedelta(hours=h):
         _run_check()
 
-if page == "📊 Dashboard":
+tab_dashboard, tab_settings = st.tabs(["Dashboard", "Settings"])
+
+with tab_dashboard:
     _show_dashboard()
-elif page == "⚙️ Settings":
+
+with tab_settings:
     _show_settings()
-else:
-    _show_test()

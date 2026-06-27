@@ -13,7 +13,7 @@ def _get_conn():
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS products (
             url TEXT PRIMARY KEY, name TEXT, price REAL, currency TEXT,
-            check_date TEXT, main_image_url TEXT
+            check_date TEXT, main_image_url TEXT, comparison_group TEXT
         );
         CREATE TABLE IF NOT EXISTS price_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT, product_url TEXT,
@@ -39,18 +39,18 @@ def get_product(url):
     return dict(r) if r else None
 
 
-def add_product(url, name, price, currency, main_image_url, check_date):
+def add_product(url, name, price, currency, main_image_url, check_date, comparison_group=None):
     conn.execute(
-        "INSERT INTO products (url, name, price, currency, check_date, main_image_url) VALUES (?,?,?,?,?,?)",
-        (url, name, price, currency, check_date, main_image_url),
+        "INSERT INTO products (url, name, price, currency, check_date, main_image_url, comparison_group) VALUES (?,?,?,?,?,?,?)",
+        (url, name, price, currency, check_date, main_image_url, comparison_group),
     )
     conn.commit()
 
 
-def update_product(url, price, name, currency, main_image_url):
+def update_product(url, price, name, currency, main_image_url, comparison_group=None):
     conn.execute(
-        "UPDATE products SET price=?, name=?, currency=?, main_image_url=?, check_date=datetime('now') WHERE url=?",
-        (price, name, currency, main_image_url, url),
+        "UPDATE products SET price=?, name=?, currency=?, main_image_url=?, check_date=datetime('now'), comparison_group=? WHERE url=?",
+        (price, name, currency, main_image_url, comparison_group, url),
     )
     conn.commit()
 

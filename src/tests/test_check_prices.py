@@ -61,7 +61,7 @@ def test_check_prices_logic(mock_scraper_cls):
     db.add_price_entry("https://example.com/p", 99.99, "Test")
 
     updated = check_prices()
-    assert len(updated) == 1
+    assert updated == 1
 
     p = db.get_product("https://example.com/p")
     assert p["price"] == 79.99
