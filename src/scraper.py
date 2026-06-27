@@ -86,7 +86,6 @@ class CustomScraper:
         raise Exception(f"Could not scrape: {url}")
 
     def scrape_urls_batch(self, urls: list[str]) -> list[dict]:
-        from concurrent.futures import ThreadPoolExecutor, as_completed
         
         results = [None] * len(urls)
         failed_indices = []
@@ -124,21 +123,18 @@ class CustomScraper:
             soup = BeautifulSoup(html, "html.parser")
             return self._extract_from_soup(soup, url)
 
-        # Run standard requests concurrently for non-Playwright domains
+        # Run standard requests sequentially for non-Playwright domains
         if standard_urls_to_indices:
-            with ThreadPoolExecutor(max_workers=min(len(standard_urls_to_indices), 10)) as executor:
-                futures = {executor.submit(scrape_single_request, url): idx for url, idx in standard_urls_to_indices.items()}
-                for future in as_completed(futures):
-                    idx = futures[future]
-                    try:
-                        data = future.result()
-                        if data and data.get("price", 0.0) > 0.0:
-                            results[idx] = data
-                        else:
-                            failed_indices.append(idx)
-                    except Exception as e:
-                        print(f"[Scraper] Thread error for {urls[idx]}: {e}")
+            for url, idx in standard_urls_to_indices.items():
+                try:
+                    data = scrape_single_request(url)
+                    if data and data.get("price", 0.0) > 0.0:
+                        results[idx] = data
+                    else:
                         failed_indices.append(idx)
+                except Exception as e:
+                    print(f"[Scraper] Thread error for {urls[idx]}: {e}")
+                    failed_indices.append(idx)
 
         # For failed or client-side rendered URLs, run them concurrently in ONE PlaywrightCrawler instance
         if failed_indices:

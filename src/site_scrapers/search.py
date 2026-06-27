@@ -79,26 +79,15 @@ def search_all_generic(query: str, domains: dict[str, str], max_pages: int = 1, 
     domains: dict of {site_display_name: domain_name} (e.g. {"Amazon": "amazon.com"})
     """
     from src.scraper import CustomScraper
-    from concurrent.futures import ThreadPoolExecutor, as_completed
     import json
     
-    # 1. Search all domains on Yahoo in parallel
-    def fetch_urls(site_name, domain):
+    site_to_urls = {}
+    for site_name, domain in domains.items():
         try:
-            return site_name, search_site_urls(query, domain, max_pages)
+            site_to_urls[site_name] = search_site_urls(query, domain, max_pages)
         except Exception as e:
             print(f"[Search] Yahoo search error for {site_name}: {e}")
-            return site_name, []
-
-    if progress_callback:
-        progress_callback("Searching for product links on search engine...")
-        
-    site_to_urls = {}
-    with ThreadPoolExecutor(max_workers=max(len(domains), 1)) as executor:
-        futures = {executor.submit(fetch_urls, name, dom): name for name, dom in domains.items()}
-        for future in as_completed(futures):
-            name, urls = future.result()
-            site_to_urls[name] = urls
+            site_to_urls[site_name] = []
             
     # 2. Gather all tasks
     urls_to_scrape = []
