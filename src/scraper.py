@@ -19,11 +19,15 @@ def fetch_rendered_html(url: str) -> str:
         html_content = []
 
         async def run_crawler():
+            from crawlee import ConcurrencySettings
             crawler = PlaywrightCrawler(
                 max_requests_per_crawl=1,
                 headless=True,
-                min_concurrency=1,
-                max_concurrency=1,
+                concurrency_settings=ConcurrencySettings(
+                    min_concurrency=1,
+                    max_concurrency=1,
+                    desired_concurrency=1,
+                ),
             )
             @crawler.router.default_handler
             async def request_handler(context: PlaywrightCrawlingContext):
@@ -147,11 +151,15 @@ class CustomScraper:
             from crawlee.crawlers import PlaywrightCrawler, PlaywrightCrawlingContext
 
             async def run_crawler_batch():
+                from crawlee import ConcurrencySettings
                 crawler = PlaywrightCrawler(
                     max_requests_per_crawl=len(failed_urls),
                     headless=True,
-                    min_concurrency=len(failed_urls),
-                    max_concurrency=len(failed_urls),
+                    concurrency_settings=ConcurrencySettings(
+                        min_concurrency=len(failed_urls),
+                        max_concurrency=len(failed_urls),
+                        desired_concurrency=len(failed_urls),
+                    ),
                 )
                 @crawler.router.default_handler
                 async def request_handler(context: PlaywrightCrawlingContext):
